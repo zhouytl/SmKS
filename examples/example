@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Sep 30 21:43:07 2025
+
+@author: zhouyangtianli
+"""
+
+import pandas as pd
+import matplotlib.pyplot as plt
+import netCDF4 as nd
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import pyproj
+from cartopy import crs as ccrs
+from obspy.taup import TauPyModel
+from obspy.geodetics import locations2degrees
+from raypath_utils import cal_raypath
+
+
+projection = pyproj.Geod(ellps='WGS84')
+model_prem = TauPyModel(model="prem")
+
+
+def cal_pierce_and_bounce(latS, lonS, depS, latR, lonR, phase):
+
+    az_SR, baz_SR, dist_SR_km = projection.inv(lonS, latS, lonR, latR)
+    gcarc = locations2degrees(latS, lonS, latR, lonR)
+    pierces_prem = model_prem.get_pierce_points(source_depth_in_km=depS,
+                                                distance_in_degree=gcarc,
+                                                phase_list=[phase])
+    path = pierces_prem[0].pierce
+    pierces_points = [list(item) for item in path]
+    pcmb = []
+    for ppoint in pierces_points:
+        if ppoint[3] == 2891:
+            pcmb.append(ppoint)
+
+    npbp = len(pcmb)
+    latPBlist = []
+    lonPBlist = []
+    for bpidx in np.arange(npbp):
+        pb = pcmb[bpidx]
+        angle = 180*pb[2]/np.pi
+        dist_in_km = dist_SR_km*angle/gcarc
+        lonB, latB, bazB = projection.fwd(lonS, latS, az_SR, dist_in_km)
+        latPBlist.append(latB)
+        lonPBlist.append(lonB)
+    return latPBlist, lonPBlist
+
+
+def plot_geometry_of_group(df):
+    fig = plt.figure(num=None, figsize=(6, 4), dpi=600, edgecolor='k')
+    ax = fig.add_subplot(projection=ccrs.Mollweide(central_longitude=180))
+    ax.coastlines()
+    ax.set_global()
+    data = nd.Dataset('../Data/velocity_models/SP12RTS_percent.nc')
+    lon_list = np.arange(-180, 181, 1)
+    lat_list = np.arange(-90, 91, 1)
+    X, Y = np.meshgrid(lon_list, lat_list)
+    Z = data['dvs'][-1, :, :]
+    ctr = ax.contourf(X, Y, Z, cmap='bwr_r', alpha=0.5,
+                      transform=ccrs.PlateCarree(central_longitude=0))
+    clb = fig.colorbar(ctr, orientation='horizontal', pad=0.05,
+                 shrink=0.7,aspect=40)
+    #clb.ax.set_ylabel('dVs (%)')
+    
+    for idx, row in df.iterrows():
+        evla = row.evla
+        evlo = row.evlo
+        evdp = row.evdp
+        stla = row.stla
+        stlo = row.stlo
+        raypath = cal_raypath(latS=evla, lonS=evlo, latR=stla, lonR=stlo)
+        raypath_west = raypath[raypath[:, 0] < 0]
+        raypath_east = raypath[raypath[:, 0] > 0]
+        if len(raypath_west) > 0:
+            ax.plot(raypath_west[:, 0], raypath_west[:, 1],
+                    c='k', alpha=0.8, linewidth=1,
+                    transform=ccrs.PlateCarree(central_longitude=0))
+        if len(raypath_east) > 0:
+            ax.plot(raypath_east[:, 0], raypath_east[:, 1],
+                    c='k', alpha=0.8, linewidth=1,
+                    transform=ccrs.PlateCarree(central_longitude=0))
+        latPBskks, lonPBskks = cal_pierce_and_bounce(latS=evla, lonS=evlo,
+                                                     depS=evdp,
+                                                     latR=stla, lonR=stlo,
+                                                     phase='SKKS')
+        latPBs3ks, lonPBs3ks = cal_pierce_and_bounce(latS=evla, lonS=evlo,
+                                                     depS=evdp,
+                                                     latR=stla, lonR=stlo,
+                                                     phase='SKKKS')
+        ax.scatter(lonPBskks, latPBskks, s=10, marker='s',
+                   c='c', edgecolor='k', zorder=2, linewidth=0.5,
+                   transform=ccrs.PlateCarree(central_longitude=0))
+        ax.scatter(lonPBs3ks, latPBs3ks, s=10, marker='s',
+                   c='m', edgecolor='k', zorder=2, linewidth=0.5,
+                   transform=ccrs.PlateCarree(central_longitude=0))
+        ax.scatter(evlo, evla, s=200,
+                   c='r', edgecolor='k', marker='*', zorder=2,
+                   transform=ccrs.PlateCarree(central_longitude=0))
+        ax.scatter(stlo, stla, s=50,
+                   c='b', edgecolor='k', marker='^', zorder=2,
+                   transform=ccrs.PlateCarree(central_longitude=0))
+        #ax.gridlines(draw_labels=True)
+
+
+event_directory = '../Data/2020-07-06-mww67-java-sea'
+df = pd.read_csv('%s/df_measure_selected.csv' % (event_directory))
+
+
+df = df[(df.gcarc>140) & (df.gcarc<150)]
+
+plt.figure(figsize=(3, 8))
+plt.subplot(411)
+plt.scatter(df.gcarc, df.t32_pp, s=20,
+            marker='s', color='w', edgecolor='k', zorder=2)
+plt.errorbar(df.gcarc, df.t32_pp, ecolor='k',
+             yerr=1/df.snr/np.sqrt(2)/2/np.pi/0.1/0.7, ls='none', zorder=1)
+plt.plot([140, 150], [0, 0], c='k')
+plt.grid()
+plt.ylim(-2, 3)
+plt.xlim(140, 150)
+plt.ylabel('Residual (s)')
+
+
+
+plt.subplot(412)
+plt.scatter(df.gcarc, df.t32_cc, s=20,
+            marker='s', color='w', edgecolor='k', zorder=2)
+plt.errorbar(df.gcarc, df.t32_cc, ecolor='k',
+             yerr=1/df.snr/np.sqrt(2)/2/np.pi/0.1/0.7, ls='none', zorder=1)
+plt.plot([140, 150], [0, 0], c='k')
+plt.grid()
+plt.ylim(-2, 3)
+plt.xlim(140, 150)
+plt.ylabel('Residual (s)')
+
+
+plt.subplot(413)
+plt.scatter(df.gcarc, df.t32_fw1, s=20,
+            marker='s', color='w', edgecolor='k', zorder=2)
+plt.errorbar(df.gcarc, df.t32_fw1, ecolor='k',
+             yerr=1/df.snr/np.sqrt(2)/2/np.pi/0.1/0.7, ls='none', zorder=1)
+plt.plot([140, 150], [0, 0], c='k')
+plt.grid()
+plt.ylim(-2, 3)
+plt.xlim(140, 150)
+plt.ylabel('Residual (s)')
+
+
+plt.subplot(414)
+plt.scatter(df.gcarc, df.t32_fw2,  s=20,
+            marker='s', color='w', edgecolor='k', zorder=2)
+plt.errorbar(df.gcarc, df.t32_fw2, ecolor='k',
+             yerr=1/df.snr/np.sqrt(2)/2/np.pi/0.1/0.7, ls='none', zorder=1)
+plt.plot([140, 150], [0, 0], c='k')
+plt.ylim(-2, 3)
+plt.grid()
+plt.xlim(140, 150)
+plt.tight_layout()
+plt.xlabel('Distance (°)')
+plt.ylabel('Residual (s)')
+
+
+plot_geometry_of_group(df)
+
+
+fig = plt.figure(figsize=(6, 6), dpi=600)
+ax = fig.add_subplot(111)
+time = np.arange(2000) * 0.1 - 50
+np_array = np.load('%s/np_waveforms_merge3.npy' % event_directory)
+for idx, row in df.iterrows():
+    ax.plot(time, row.gcarc+np_array[:, int(row.tridx), 0], c='r', linewidth=.5)
+    ax.plot(time, row.gcarc+np_array[:, int(row.tridx), 2], c='k', linewidth=.5)
+ax.set_xlim(-50, 150)
+ax.set_ylim(139, 151)
+ax.set_xlabel('Time (s)')
+ax.set_ylabel('Distance (°)')
